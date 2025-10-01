@@ -12,7 +12,19 @@ import time
 
 # Import our custom modules
 from pdf_to_images import process_all_pdfs, convert_pdf_to_images
-from process_ocr import process_page_images
+
+# Try to import the full OCR processor, fallback to simple version
+try:
+    from process_ocr import process_page_images
+    print("Using full DotsOCR processor")
+except ImportError as e:
+    print(f"Warning: {e}")
+    try:
+        from process_ocr_simple import process_page_images_simple as process_page_images
+        print("Using simplified DotsOCR processor")
+    except ImportError:
+        print("Error: No OCR processor available")
+        process_page_images = None
 
 
 def run_complete_pipeline(pdfs_dir="pdfs", pages_dir="pages", results_dir="results", 
@@ -70,6 +82,11 @@ def run_complete_pipeline(pdfs_dir="pdfs", pages_dir="pages", results_dir="resul
         print("\nTo download the model, you can use:")
         print("git lfs install")
         print("git clone https://huggingface.co/rednote-hilab/dots.ocr ./weights/DotsOCR")
+        return False
+    
+    if process_page_images is None:
+        print("Error: No OCR processor available")
+        print("Please check your dependencies or run: python install_deps.py")
         return False
     
     try:
@@ -144,6 +161,11 @@ def run_single_pdf_pipeline(pdf_path, pages_dir="pages", results_dir="results",
         print(f"\nWarning: DotsOCR model not found at: {model_path}")
         print("You need to download the DotsOCR model weights.")
         print("Please visit: https://huggingface.co/rednote-hilab/dots.ocr")
+        return False
+    
+    if process_page_images is None:
+        print("Error: No OCR processor available")
+        print("Please check your dependencies or run: python install_deps.py")
         return False
     
     try:

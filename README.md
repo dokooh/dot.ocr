@@ -26,14 +26,30 @@ source dot.ocr/bin/activate
 ```
 
 ### 2. Required Packages
-The following packages are installed:
+
+**Core Dependencies** (always required):
 - torch, torchvision, torchaudio
 - transformers
-- qwen-vl-utils
-- dots-ocr
 - PyMuPDF (for PDF processing)
 - Pillow (for image processing)
 - numpy
+- huggingface-hub
+
+**Optional Dependencies** (may not be available on all systems):
+- qwen-vl-utils (fallback implementation provided)
+- dots-ocr (fallback implementation provided)
+
+**Installation Options:**
+```bash
+# Option 1: Install with automatic fallback handling
+python install_deps.py
+
+# Option 2: Manual installation
+pip install -r requirements.txt
+
+# Option 3: Core packages only
+pip install torch transformers PyMuPDF Pillow numpy huggingface-hub
+```
 
 ### 3. Download DotsOCR Model
 
@@ -150,17 +166,32 @@ This pipeline uses the DotsOCR model from Hugging Face:
 
 ### Common Issues
 
-1. **Model not found**: Make sure you've downloaded the DotsOCR model weights to `./weights/DotsOCR`
+1. **Module not found errors** (qwen_vl_utils, dots_ocr):
+   - These are known issues with some package dependencies
+   - The pipeline includes fallback implementations
+   - Run `python install_deps.py` for automatic handling
+   - If issues persist, use the simplified processor: `python process_ocr_simple.py`
 
-2. **CUDA out of memory**: Reduce batch size or use CPU processing:
-   ```python
-   # Edit process_ocr.py and change device selection
-   self.device = "cpu"  # Force CPU usage
+2. **Model not found**: Make sure you've downloaded the DotsOCR model weights:
+   ```bash
+   python setup_model.py
    ```
 
-3. **No PDFs found**: Ensure PDF files are placed in the `pdfs/` directory
+3. **CUDA out of memory**: Use CPU processing or reduce memory usage:
+   ```bash
+   # Force CPU usage
+   export CUDA_VISIBLE_DEVICES=""
+   python main.py
+   ```
 
-4. **Permission errors**: Make sure the script has write permissions for `pages/` and `results/` directories
+4. **No PDFs found**: Ensure PDF files are placed in the `pdfs/` directory
+
+5. **Permission errors**: Make sure the script has write permissions for `pages/` and `results/` directories
+
+6. **Import errors on Kaggle/Colab**: Use the simplified version:
+   ```bash
+   python process_ocr_simple.py --pages-dir pages --results-dir results
+   ```
 
 ### Performance Tips
 

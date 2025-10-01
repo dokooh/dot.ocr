@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DotsOCR Processing Script
-Applies DotsOCR transformer to page images and saves OCR results.
+Simplified DotsOCR Processing Script
+Works without qwen-vl-utils dependency using basic transformers functionality.
 """
 
 import os
@@ -10,40 +10,14 @@ import json
 import torch
 from pathlib import Path
 import argparse
-from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
-
-# Optional imports with fallbacks
-try:
-    from qwen_vl_utils import process_vision_info
-except ImportError:
-    print("Warning: qwen_vl_utils not available, using fallback implementation")
-    def process_vision_info(messages):
-        """Fallback implementation for process_vision_info."""
-        image_inputs = []
-        video_inputs = []
-        
-        for message in messages:
-            if isinstance(message, dict) and "content" in message:
-                for content in message["content"]:
-                    if isinstance(content, dict):
-                        if content.get("type") == "image" and "image" in content:
-                            image_inputs.append(content["image"])
-                        elif content.get("type") == "video" and "video" in content:
-                            video_inputs.append(content["video"])
-        
-        return image_inputs, video_inputs
-
-try:
-    from dots_ocr.utils import dict_promptmode_to_prompt
-except ImportError:
-    print("Warning: dots_ocr.utils not available, continuing without it")
-    dict_promptmode_to_prompt = None
+from transformers import AutoModelForCausalLM, AutoProcessor
+from PIL import Image
 
 
-class DotsOCRProcessor:
+class SimpleDotsOCRProcessor:
     def __init__(self, model_path="./weights/DotsOCR"):
         """
-        Initialize the DotsOCR processor.
+        Initialize the simplified DotsOCR processor.
         
         Args:
             model_path (str): Path to the DotsOCR model weights
@@ -84,16 +58,16 @@ class DotsOCRProcessor:
             if not os.path.exists(self.model_path):
                 print(f"Model path not found: {self.model_path}")
                 print("You need to download the DotsOCR model weights.")
-                print("Please visit: https://huggingface.co/rednote-hilab/dots.ocr")
+                print("Run: python setup_model.py")
                 return False
             
-            # Load model
+            # Load model with basic settings
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
-                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else "cpu",
-                trust_remote_code=True
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                device_map="auto" if self.device == "cuda" else None,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True
             )
             
             # Load processor
@@ -102,16 +76,23 @@ class DotsOCRProcessor:
                 trust_remote_code=True
             )
             
+            if self.device == "cuda" and hasattr(self.model, 'to'):
+                self.model = self.model.to(self.device)
+            
             print("Model and processor loaded successfully!")
             return True
             
         except Exception as e:
             print(f"Error loading model: {str(e)}")
+            print("\nTroubleshooting tips:")
+            print("1. Make sure you downloaded the model: python setup_model.py")
+            print("2. Check if you have enough GPU/RAM memory")
+            print("3. Try using CPU by setting CUDA_VISIBLE_DEVICES=\"\"")
             return False
     
     def process_image(self, image_path):
         """
-        Process a single image with DotsOCR.
+        Process a single image with DotsOCR using simplified approach.
         
         Args:
             image_path (str): Path to the image file
@@ -126,55 +107,42 @@ class DotsOCRProcessor:
             
             print(f"Processing image: {image_path}")
             
-            # Prepare messages for the model
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "image": image_path
-                        },
-                        {"type": "text", "text": self.prompt}
-                    ]
-                }
-            ]
+            # Load and prepare image
+            image = Image.open(image_path).convert('RGB')
             
-            # Preparation for inference
-            text = self.processor.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
+            # Prepare text prompt
+            prompt = f"<|im_start|>user\n<image>\n{self.prompt}<|im_end|>\n<|im_start|>assistant\n"
             
-            image_inputs, video_inputs = process_vision_info(messages)
+            # Process inputs using the processor
             inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
+                text=prompt,
+                images=image,
+                return_tensors="pt"
             )
             
             # Move inputs to device
-            inputs = inputs.to(self.device)
+            if self.device == "cuda":
+                inputs = {k: v.to(self.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
             
-            # Inference: Generation of the output
+            # Generate response
             print("Generating OCR output...")
             with torch.no_grad():
-                generated_ids = self.model.generate(**inputs, max_new_tokens=24000)
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=4000,
+                    temperature=0.1,
+                    do_sample=False,
+                    pad_token_id=self.processor.tokenizer.eos_token_id
+                )
             
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            
-            output_text = self.processor.batch_decode(
-                generated_ids_trimmed, 
-                skip_special_tokens=True, 
+            # Decode the response
+            generated_text = self.processor.batch_decode(
+                generated_ids[:, inputs['input_ids'].shape[1]:],
+                skip_special_tokens=True,
                 clean_up_tokenization_spaces=False
-            )
+            )[0]
             
-            return output_text[0] if output_text else None
+            return generated_text.strip()
             
         except Exception as e:
             print(f"Error processing image {image_path}: {str(e)}")
@@ -204,7 +172,7 @@ class DotsOCRProcessor:
             ocr_result = self.process_image(image_path)
             
             if ocr_result:
-                # Save result as JSON file
+                # Try to save as JSON first
                 result_filename = f"{image_name}_ocr_result.json"
                 result_path = os.path.join(output_dir, result_filename)
                 
@@ -216,7 +184,7 @@ class DotsOCRProcessor:
                     with open(result_path, 'w', encoding='utf-8') as f:
                         json.dump(parsed_result, f, indent=2, ensure_ascii=False)
                     
-                    print(f"Saved result to: {result_path}")
+                    print(f"Saved JSON result to: {result_path}")
                     results[image_name] = parsed_result
                     
                 except json.JSONDecodeError:
@@ -235,16 +203,11 @@ class DotsOCRProcessor:
         return results
 
 
-def process_page_images(pages_dir, results_dir, model_path="./weights/DotsOCR"):
+def process_page_images_simple(pages_dir, results_dir, model_path="./weights/DotsOCR"):
     """
-    Process all page images in the pages directory.
-    
-    Args:
-        pages_dir (str): Directory containing page images
-        results_dir (str): Directory to save OCR results
-        model_path (str): Path to DotsOCR model
+    Process all page images using the simplified processor.
     """
-    processor = DotsOCRProcessor(model_path)
+    processor = SimpleDotsOCRProcessor(model_path)
     
     # Load the model
     if not processor.load_model():
@@ -276,7 +239,7 @@ def process_page_images(pages_dir, results_dir, model_path="./weights/DotsOCR"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Process images with DotsOCR')
+    parser = argparse.ArgumentParser(description='Process images with simplified DotsOCR')
     parser.add_argument('--pages-dir', type=str, default='pages', help='Directory containing page images')
     parser.add_argument('--results-dir', type=str, default='results', help='Directory to save OCR results')
     parser.add_argument('--model-path', type=str, default='./weights/DotsOCR', help='Path to DotsOCR model')
@@ -286,7 +249,7 @@ def main():
     
     if args.image:
         # Process single image
-        processor = DotsOCRProcessor(args.model_path)
+        processor = SimpleDotsOCRProcessor(args.model_path)
         if processor.load_model():
             result = processor.process_image(args.image)
             if result:
@@ -294,7 +257,7 @@ def main():
                 print(result)
     else:
         # Process all images in pages directory
-        process_page_images(args.pages_dir, args.results_dir, args.model_path)
+        process_page_images_simple(args.pages_dir, args.results_dir, args.model_path)
 
 
 if __name__ == "__main__":
