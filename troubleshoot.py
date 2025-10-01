@@ -144,9 +144,11 @@ def provide_solutions(missing_core):
     print("   ✓ FIXED - Updated to use fitz.Document() instead")
     print("   - If still occurring, try: pip install --upgrade PyMuPDF")
     
-    print("\n2. FlashAttention2 'flash_attn seems to be not installed' error:")
+    print("\n2. FlashAttention2 errors (installation/symbol errors):")
     print("   ✓ HANDLED - Automatic fallback to eager attention")
-    print("   - Optional: python setup_flash_attention.py (for faster inference)")
+    print("   - 'flash_attn not installed': Normal, uses eager attention")
+    print("   - 'undefined symbol' errors: Corrupted installation, uses fallback")
+    print("   - Diagnostic tool: python fix_flash_attention.py")
     print("   - Pipeline works perfectly without FlashAttention2")
     
     print("\n3. Module import errors (qwen_vl_utils, dots_ocr):")

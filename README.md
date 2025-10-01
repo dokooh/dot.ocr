@@ -171,10 +171,12 @@ This pipeline uses the DotsOCR model from Hugging Face:
    - This was a compatibility issue with newer PyMuPDF versions
    - If still occurring, update PyMuPDF: `pip install --upgrade PyMuPDF`
 
-2. **FlashAttention2 "flash_attn seems to be not installed" error**:
-   - ✅ **FIXED** - Automatic fallback to eager attention
-   - FlashAttention2 is optional (provides faster inference but requires complex setup)
+2. **FlashAttention2 errors** (installation, symbol, CUDA issues):
+   - ✅ **FIXED** - Automatic detection and fallback to eager attention
+   - Handles: "flash_attn not installed", "undefined symbol", CUDA loading errors
+   - FlashAttention2 is optional (provides faster inference but can be problematic)
    - Pipeline works perfectly without it
+   - Diagnostic tool: `python fix_flash_attention.py`
    - Optional setup: `python setup_flash_attention.py`
 
 3. **Module not found errors** (qwen_vl_utils, dots_ocr):

@@ -70,19 +70,44 @@ class SimpleDotsOCRProcessor:
                 "attn_implementation": "eager"  # Use eager attention to avoid FlashAttention2 issues
             }
             
-            # Only try FlashAttention2 if explicitly available
+            # Only try FlashAttention2 if explicitly available and working
             if self.device == "cuda":
+                flash_attn_available = False
                 try:
                     import flash_attn
+                    # Test if flash_attn actually works (not just importable)
+                    _ = flash_attn.__version__
+                    flash_attn_available = True
+                    print("FlashAttention2 detected and working")
+                except (ImportError, AttributeError, OSError, RuntimeError) as e:
+                    print(f"FlashAttention2 not available or broken: {type(e).__name__}")
+                    print("Using eager attention (this is perfectly fine)")
+                    flash_attn_available = False
+                
+                if flash_attn_available:
                     model_kwargs["attn_implementation"] = "flash_attention_2"
                     print("Using FlashAttention2 for faster inference")
-                except ImportError:
-                    print("FlashAttention2 not available, using eager attention (this is fine)")
+                # else: keep eager attention as default
             
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                **model_kwargs
-            )
+            # Try to load model with the chosen attention mechanism
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    **model_kwargs
+                )
+            except Exception as e:
+                # If FlashAttention2 fails during model loading, fallback to eager
+                if model_kwargs.get("attn_implementation") == "flash_attention_2":
+                    print(f"FlashAttention2 failed during model loading: {type(e).__name__}")
+                    print("Falling back to eager attention...")
+                    model_kwargs["attn_implementation"] = "eager"
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        **model_kwargs
+                    )
+                else:
+                    # Re-raise if it's not a FlashAttention2 issue
+                    raise
             
             # Load processor
             self.processor = AutoProcessor.from_pretrained(
