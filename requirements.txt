@@ -1,0 +1,10 @@
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+qwen-vl-utils
+dots-ocr
+PyMuPDF>=1.23.0
+Pillow>=9.0.0
+numpy>=1.21.0
+huggingface-hub>=0.16.0
