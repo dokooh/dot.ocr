@@ -43,6 +43,11 @@ def main():
         "dots-ocr"
     ]
     
+    # Performance packages (for GPU acceleration)
+    performance_packages = [
+        "flash-attn"  # For FlashAttention2 - requires CUDA and specific setup
+    ]
+    
     failed_required = []
     
     print("\nInstalling required packages...")
@@ -52,6 +57,11 @@ def main():
     
     print("\nInstalling optional packages...")
     for package in optional_packages:
+        install_package(package, optional=True)
+    
+    print("\nInstalling performance packages (GPU optimization)...")
+    for package in performance_packages:
+        print(f"⚠️  {package} requires CUDA and specific compilation setup")
         install_package(package, optional=True)
     
     print("\n" + "="*50)

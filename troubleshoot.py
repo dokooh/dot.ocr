@@ -144,16 +144,21 @@ def provide_solutions(missing_core):
     print("   ✓ FIXED - Updated to use fitz.Document() instead")
     print("   - If still occurring, try: pip install --upgrade PyMuPDF")
     
-    print("\n2. Module import errors (qwen_vl_utils, dots_ocr):")
+    print("\n2. FlashAttention2 'flash_attn seems to be not installed' error:")
+    print("   ✓ HANDLED - Automatic fallback to eager attention")
+    print("   - Optional: python setup_flash_attention.py (for faster inference)")
+    print("   - Pipeline works perfectly without FlashAttention2")
+    
+    print("\n3. Module import errors (qwen_vl_utils, dots_ocr):")
     print("   ✓ HANDLED - Fallback implementations provided")
     print("   - Use: python process_ocr_simple.py (fallback version)")
     print("   - Or: python install_deps.py")
     
-    print("\n3. Memory issues:")
+    print("\n4. Memory issues:")
     print("   - Force CPU: set CUDA_VISIBLE_DEVICES=\"\"")
     print("   - Or add: export CUDA_VISIBLE_DEVICES=\"\"")
     
-    print("\n4. Kaggle/Colab issues:")
+    print("\n5. Kaggle/Colab issues:")
     print("   - Use simplified processor: process_ocr_simple.py")
     print("   - Install core deps only: pip install torch transformers PyMuPDF Pillow")
 

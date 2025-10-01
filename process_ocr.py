@@ -87,13 +87,28 @@ class DotsOCRProcessor:
                 print("Please visit: https://huggingface.co/rednote-hilab/dots.ocr")
                 return False
             
-            # Load model
+            # Load model with attention fallback
+            model_kwargs = {
+                "torch_dtype": torch.bfloat16 if self.device == "cuda" else torch.float32,
+                "device_map": "auto" if self.device == "cuda" else "cpu",
+                "trust_remote_code": True
+            }
+            
+            # Try FlashAttention2 first, fallback to eager attention
+            if self.device == "cuda":
+                try:
+                    import flash_attn
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                    print("Using FlashAttention2 for faster inference")
+                except ImportError:
+                    print("FlashAttention2 not available, using eager attention")
+                    model_kwargs["attn_implementation"] = "eager"
+            else:
+                model_kwargs["attn_implementation"] = "eager"
+            
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
-                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else "cpu",
-                trust_remote_code=True
+                **model_kwargs
             )
             
             # Load processor

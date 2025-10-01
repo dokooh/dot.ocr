@@ -61,13 +61,27 @@ class SimpleDotsOCRProcessor:
                 print("Run: python setup_model.py")
                 return False
             
-            # Load model with basic settings
+            # Load model with attention fallback
+            model_kwargs = {
+                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+                "device_map": "auto" if self.device == "cuda" else None,
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,
+                "attn_implementation": "eager"  # Use eager attention to avoid FlashAttention2 issues
+            }
+            
+            # Only try FlashAttention2 if explicitly available
+            if self.device == "cuda":
+                try:
+                    import flash_attn
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                    print("Using FlashAttention2 for faster inference")
+                except ImportError:
+                    print("FlashAttention2 not available, using eager attention (this is fine)")
+            
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else None,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True
+                **model_kwargs
             )
             
             # Load processor
