@@ -166,7 +166,12 @@ This pipeline uses the DotsOCR model from Hugging Face:
 
 ### Common Issues
 
-1. **Module not found errors** (qwen_vl_utils, dots_ocr):
+1. **PyMuPDF "fitz has no attribute 'open'" error**:
+   - ✅ **FIXED** - Updated to use `fitz.Document()` instead
+   - This was a compatibility issue with newer PyMuPDF versions
+   - If still occurring, update PyMuPDF: `pip install --upgrade PyMuPDF`
+
+2. **Module not found errors** (qwen_vl_utils, dots_ocr):
    - These are known issues with some package dependencies
    - The pipeline includes fallback implementations
    - Run `python install_deps.py` for automatic handling

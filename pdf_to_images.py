@@ -10,6 +10,28 @@ import fitz  # PyMuPDF
 from pathlib import Path
 import argparse
 
+# Check PyMuPDF version for compatibility
+def get_fitz_version():
+    """Get PyMuPDF version info."""
+    try:
+        return fitz.version[0] if hasattr(fitz, 'version') else "unknown"
+    except:
+        return "unknown"
+
+def open_pdf_document(pdf_path):
+    """Open PDF document with version compatibility."""
+    try:
+        # Use fitz.Document as primary method (works with all versions)
+        return fitz.Document(pdf_path)
+    except Exception as e:
+        print(f"Error opening PDF with fitz.Document: {e}")
+        try:
+            # Fallback to fitz.open if Document fails
+            return fitz.open(pdf_path)
+        except Exception as e2:
+            print(f"Error opening PDF with fitz.open: {e2}")
+            raise e2
+
 
 def convert_pdf_to_images(pdf_path, output_dir, dpi=300):
     """
@@ -24,8 +46,8 @@ def convert_pdf_to_images(pdf_path, output_dir, dpi=300):
         list: List of saved image file paths
     """
     try:
-        # Open PDF document
-        pdf_document = fitz.open(pdf_path)
+        # Open PDF document with version compatibility
+        pdf_document = open_pdf_document(pdf_path)
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)

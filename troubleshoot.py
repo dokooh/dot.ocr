@@ -140,15 +140,20 @@ def provide_solutions(missing_core):
     print("  python setup_model.py")
     
     print("\n🔧 Common Fixes:")
-    print("1. Module import errors:")
+    print("1. PyMuPDF 'fitz has no attribute open' error:")
+    print("   ✓ FIXED - Updated to use fitz.Document() instead")
+    print("   - If still occurring, try: pip install --upgrade PyMuPDF")
+    
+    print("\n2. Module import errors (qwen_vl_utils, dots_ocr):")
+    print("   ✓ HANDLED - Fallback implementations provided")
     print("   - Use: python process_ocr_simple.py (fallback version)")
     print("   - Or: python install_deps.py")
     
-    print("\n2. Memory issues:")
+    print("\n3. Memory issues:")
     print("   - Force CPU: set CUDA_VISIBLE_DEVICES=\"\"")
     print("   - Or add: export CUDA_VISIBLE_DEVICES=\"\"")
     
-    print("\n3. Kaggle/Colab issues:")
+    print("\n4. Kaggle/Colab issues:")
     print("   - Use simplified processor: process_ocr_simple.py")
     print("   - Install core deps only: pip install torch transformers PyMuPDF Pillow")
 
