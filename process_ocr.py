@@ -51,7 +51,18 @@ class DotsOCRProcessor:
         self.model_path = model_path
         self.model = None
         self.processor = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Check GPU memory and set device accordingly
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+            print(f"Available GPU memory: {gpu_memory:.1f} GB")
+            if gpu_memory < 8:  # Less than 8GB, use CPU to avoid OOM
+                print("GPU memory insufficient for this large model, using CPU")
+                self.device = "cpu"
+            else:
+                self.device = "cuda"
+        else:
+            self.device = "cpu"
         
         print(f"Using device: {self.device}")
         
@@ -89,8 +100,8 @@ class DotsOCRProcessor:
             
             # Load model with attention fallback
             model_kwargs = {
-                "torch_dtype": torch.bfloat16 if self.device == "cuda" else torch.float32,
-                "device_map": "auto" if self.device == "cuda" else "cpu",
+                "torch_dtype": torch.float32,  # Use float32 for CPU compatibility
+                "device_map": "cpu" if self.device == "cpu" else "auto",
                 "trust_remote_code": True
             }
             
@@ -123,24 +134,138 @@ class DotsOCRProcessor:
                     **model_kwargs
                 )
             except Exception as e:
+                error_msg = str(e).lower()
+                
                 # If FlashAttention2 fails during model loading, fallback to eager
                 if model_kwargs.get("attn_implementation") == "flash_attention_2":
                     print(f"FlashAttention2 failed during model loading: {type(e).__name__}")
                     print("Falling back to eager attention...")
                     model_kwargs["attn_implementation"] = "eager"
+                    try:
+                        self.model = AutoModelForCausalLM.from_pretrained(
+                            self.model_path,
+                            **model_kwargs
+                        )
+                    except Exception as e2:
+                        # Handle video processor issues after attention fallback
+                        if ("video processor" in str(e2).lower() or 
+                            "nonetype for argument video_processor" in str(e2).lower()):
+                            print("Video processor config issue detected, using compatibility mode...")
+                            model_kwargs.update({
+                                "ignore_mismatched_sizes": True,
+                                "_from_auto": False
+                            })
+                            self.model = AutoModelForCausalLM.from_pretrained(
+                                self.model_path,
+                                **model_kwargs
+                            )
+                        else:
+                            raise e2
+                # Handle video processor configuration issues directly
+                elif ("video processor" in error_msg or 
+                      "nonetype for argument video_processor" in error_msg):
+                    print("Video processor config issue detected, using compatibility mode...")
+                    model_kwargs.update({
+                        "ignore_mismatched_sizes": True,
+                        "_from_auto": False
+                    })
                     self.model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         **model_kwargs
                     )
                 else:
-                    # Re-raise if it's not a FlashAttention2 issue
+                    # Re-raise if it's not a known issue
                     raise
             
-            # Load processor
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_path, 
-                trust_remote_code=True
-            )
+            # Load processor with error handling
+            try:
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_path, 
+                    trust_remote_code=True
+                )
+            except Exception as e:
+                error_msg = str(e).lower()
+                if ("video processor" in error_msg or 
+                    "nonetype for argument video_processor" in error_msg):
+                    print("Video processor issue with AutoProcessor, trying alternative approach...")
+                    # Try loading processor components separately
+                    try:
+                        from transformers import AutoTokenizer, AutoImageProcessor
+                        # Load tokenizer and image processor separately using Auto classes
+                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        image_processor = AutoImageProcessor.from_pretrained(self.model_path, trust_remote_code=True)
+                        
+                        # Create a simple processor wrapper
+                        class SimpleProcessor:
+                            def __init__(self, tokenizer, image_processor):
+                                self.tokenizer = tokenizer
+                                self.image_processor = image_processor
+                            
+                            def __call__(self, text=None, images=None, **kwargs):
+                                if images is not None:
+                                    # Process images
+                                    processed_images = self.image_processor(images, **kwargs)
+                                    if text is not None:
+                                        # Process text
+                                        processed_text = self.tokenizer(text, **kwargs)
+                                        # Combine them
+                                        processed_text.update(processed_images)
+                                        return processed_text
+                                    return processed_images
+                                elif text is not None:
+                                    return self.tokenizer(text, **kwargs)
+                                else:
+                                    return {}
+                            
+                            def apply_chat_template(self, messages, **kwargs):
+                                """Apply chat template using the tokenizer."""
+                                if hasattr(self.tokenizer, 'apply_chat_template'):
+                                    return self.tokenizer.apply_chat_template(messages, **kwargs)
+                                else:
+                                    # Fallback: create a simple text prompt from messages
+                                    if isinstance(messages, list):
+                                        text_parts = []
+                                        for msg in messages:
+                                            if isinstance(msg, dict) and 'content' in msg:
+                                                content = msg['content']
+                                                if isinstance(content, list):
+                                                    # Handle list of content items
+                                                    for item in content:
+                                                        if isinstance(item, dict) and item.get('type') == 'text':
+                                                            text_parts.append(item.get('text', ''))
+                                                elif isinstance(content, str):
+                                                    text_parts.append(content)
+                                                else:
+                                                    text_parts.append(str(content))
+                                            else:
+                                                text_parts.append(str(msg))
+                                        return " ".join(text_parts)
+                                    return str(messages)
+                        
+                        self.processor = SimpleProcessor(tokenizer, image_processor)
+                        print("Loaded processor components separately (video processor bypassed)")
+                        
+                    except Exception as e2:
+                        print(f"Failed to load processor components: {e2}")
+                        # Try with simplified processor loading
+                        print("Attempting minimal processor setup...")
+                        try:
+                            self.processor = AutoProcessor.from_pretrained(
+                                self.model_path, 
+                                trust_remote_code=True,
+                                video_processor=None  # Explicitly set to None
+                            )
+                        except Exception as e3:
+                            print(f"All processor loading methods failed: {e3}")
+                            return False
+                else:
+                    print(f"Processor loading error: {e}")
+                    return False
+            
+            # Convert model to float32 if using CPU to avoid dtype mismatches
+            if self.device == "cpu":
+                print("Converting model to float32 for CPU compatibility...")
+                self.model = self.model.float()
             
             print("Model and processor loaded successfully!")
             return True
@@ -181,20 +306,41 @@ class DotsOCRProcessor:
             ]
             
             # Preparation for inference
-            text = self.processor.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
+            try:
+                text = self.processor.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
+                print(f"Chat template result: {text}")
+            except Exception as e:
+                print(f"Error in apply_chat_template: {e}")
+                text = self.prompt  # Fallback to just the prompt
             
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            )
+            try:
+                image_inputs, video_inputs = process_vision_info(messages)
+                print(f"Vision info: images={len(image_inputs)}, videos={len(video_inputs)}")
+            except Exception as e:
+                print(f"Error in process_vision_info: {e}")
+                image_inputs, video_inputs = [image_path], []
+            
+            try:
+                inputs = self.processor(
+                    text=[text],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt",
+                )
+            except Exception as e:
+                print(f"Error in processor call: {e}")
+                # Try simpler approach
+                inputs = self.processor(
+                    text=[text],
+                    images=image_inputs,
+                    padding=True,
+                    return_tensors="pt",
+                )
             
             # Move inputs to device
             inputs = inputs.to(self.device)
