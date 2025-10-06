@@ -203,10 +203,11 @@ class DotsOCRProcessor:
                             
                             def __call__(self, text=None, images=None, **kwargs):
                                 if images is not None:
-                                    # Process images
-                                    processed_images = self.image_processor(images, **kwargs)
+                                    # Process images - remove padding argument for image processor
+                                    image_kwargs = {k: v for k, v in kwargs.items() if k != 'padding'}
+                                    processed_images = self.image_processor(images, **image_kwargs)
                                     if text is not None:
-                                        # Process text
+                                        # Process text - keep all kwargs for tokenizer
                                         processed_text = self.tokenizer(text, **kwargs)
                                         # Combine them
                                         processed_text.update(processed_images)
@@ -329,18 +330,24 @@ class DotsOCRProcessor:
                     text=[text],
                     images=image_inputs,
                     videos=video_inputs,
-                    padding=True,
                     return_tensors="pt",
                 )
             except Exception as e:
                 print(f"Error in processor call: {e}")
-                # Try simpler approach
-                inputs = self.processor(
-                    text=[text],
-                    images=image_inputs,
-                    padding=True,
-                    return_tensors="pt",
-                )
+                # Try simpler approach without videos and padding
+                try:
+                    inputs = self.processor(
+                        text=[text],
+                        images=image_inputs,
+                        return_tensors="pt",
+                    )
+                except Exception as e2:
+                    print(f"Error in simplified processor call: {e2}")
+                    # Try with just text processing
+                    inputs = self.processor(
+                        text=[text],
+                        return_tensors="pt",
+                    )
             
             # Move inputs to device
             inputs = inputs.to(self.device)
