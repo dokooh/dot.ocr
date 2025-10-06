@@ -22,9 +22,15 @@ except ImportError:
         image_inputs = []
         video_inputs = []
         
+        if messages is None:
+            return image_inputs, video_inputs
+            
         for message in messages:
             if isinstance(message, dict) and "content" in message:
-                for content in message["content"]:
+                content_list = message["content"]
+                if content_list is None:
+                    continue
+                for content in content_list:
                     if isinstance(content, dict):
                         if content.get("type") == "image" and "image" in content:
                             image_inputs.append(content["image"])
@@ -221,27 +227,42 @@ class DotsOCRProcessor:
                             def apply_chat_template(self, messages, **kwargs):
                                 """Apply chat template using the tokenizer."""
                                 if hasattr(self.tokenizer, 'apply_chat_template'):
-                                    return self.tokenizer.apply_chat_template(messages, **kwargs)
-                                else:
-                                    # Fallback: create a simple text prompt from messages
-                                    if isinstance(messages, list):
-                                        text_parts = []
-                                        for msg in messages:
-                                            if isinstance(msg, dict) and 'content' in msg:
-                                                content = msg['content']
-                                                if isinstance(content, list):
-                                                    # Handle list of content items
-                                                    for item in content:
-                                                        if isinstance(item, dict) and item.get('type') == 'text':
-                                                            text_parts.append(item.get('text', ''))
-                                                elif isinstance(content, str):
-                                                    text_parts.append(content)
-                                                else:
-                                                    text_parts.append(str(content))
+                                    try:
+                                        return self.tokenizer.apply_chat_template(messages, **kwargs)
+                                    except Exception as e:
+                                        print(f"Error in tokenizer apply_chat_template: {e}")
+                                        # Fall through to manual implementation
+                                
+                                # Fallback: create a simple text prompt from messages
+                                if isinstance(messages, list):
+                                    text_parts = []
+                                    for msg in messages:
+                                        if isinstance(msg, dict) and 'content' in msg:
+                                            content = msg['content']
+                                            if isinstance(content, list):
+                                                # Handle list of content items
+                                                for item in content:
+                                                    if isinstance(item, dict) and item.get('type') == 'text':
+                                                        text_parts.append(str(item.get('text', '')))
+                                            elif isinstance(content, str):
+                                                text_parts.append(content)
                                             else:
-                                                text_parts.append(str(msg))
-                                        return " ".join(text_parts)
-                                    return str(messages)
+                                                text_parts.append(str(content))
+                                        else:
+                                            text_parts.append(str(msg))
+                                    return " ".join(text_parts)
+                                return str(messages)
+                            
+                            def batch_decode(self, sequences, **kwargs):
+                                """Decode sequences using the tokenizer."""
+                                if hasattr(self.tokenizer, 'batch_decode'):
+                                    return self.tokenizer.batch_decode(sequences, **kwargs)
+                                elif hasattr(self.tokenizer, 'decode'):
+                                    # Fallback to individual decode
+                                    return [self.tokenizer.decode(seq, **kwargs) for seq in sequences]
+                                else:
+                                    # Last resort: convert to strings
+                                    return [str(seq) for seq in sequences]
                         
                         self.processor = SimpleProcessor(tokenizer, image_processor)
                         print("Loaded processor components separately (video processor bypassed)")
@@ -320,10 +341,21 @@ class DotsOCRProcessor:
             
             try:
                 image_inputs, video_inputs = process_vision_info(messages)
-                print(f"Vision info: images={len(image_inputs)}, videos={len(video_inputs)}")
+                print(f"Vision info: images={len(image_inputs)}, videos={len(video_inputs) if video_inputs else 0}")
             except Exception as e:
                 print(f"Error in process_vision_info: {e}")
                 image_inputs, video_inputs = [image_path], []
+            
+            # Load the actual image data
+            try:
+                from PIL import Image
+                if isinstance(image_inputs[0], str):
+                    # Convert file path to loaded image
+                    loaded_images = [Image.open(img_path) for img_path in image_inputs]
+                    image_inputs = loaded_images
+            except Exception as e:
+                print(f"Error loading images: {e}")
+                # Keep as paths and let processor handle it
             
             try:
                 inputs = self.processor(
