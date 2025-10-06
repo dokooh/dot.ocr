@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-DotsOCR Processing Script
-Applies DotsOCR transformer to page images and saves OCR results.
+DotsOCR Processing Script - Updated with improved error handling
 """
 
 import os
-import sys
 import json
-import torch
-from pathlib import Path
 import argparse
+import torch
+from PIL import Image
+from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
 # Optional imports with fallbacks
@@ -18,62 +17,231 @@ try:
 except ImportError:
     print("Warning: qwen_vl_utils not available, using fallback implementation")
     def process_vision_info(messages):
-        """Fallback implementation for process_vision_info."""
+        """Fallback implementation for process_vision_info"""
         image_inputs = []
         video_inputs = []
         
-        if messages is None:
-            return image_inputs, video_inputs
-            
         for message in messages:
             if isinstance(message, dict) and "content" in message:
-                content_list = message["content"]
-                if content_list is None:
-                    continue
-                for content in content_list:
+                for content in message["content"]:
                     if isinstance(content, dict):
-                        if content.get("type") == "image" and "image" in content:
-                            image_inputs.append(content["image"])
-                        elif content.get("type") == "video" and "video" in content:
-                            video_inputs.append(content["video"])
+                        if content.get("type") == "image":
+                            image_path = content.get("image")
+                            if image_path:
+                                try:
+                                    image = Image.open(image_path)
+                                    image_inputs.append(image)
+                                except Exception as e:
+                                    print(f"Error loading image {image_path}: {e}")
         
         return image_inputs, video_inputs
 
-try:
-    from dots_ocr.utils import dict_promptmode_to_prompt
-except ImportError:
-    print("Warning: dots_ocr.utils not available, continuing without it")
-    dict_promptmode_to_prompt = None
+
+class ImprovedSimpleProcessor:
+    """Improved processor wrapper with better error handling"""
+    
+    def __init__(self, processor, tokenizer):
+        self.processor = processor
+        self.tokenizer = tokenizer
+        self.chat_template = None
+        
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        """Apply chat template with improved error handling"""
+        try:
+            # Try the tokenizer's chat template first
+            if hasattr(self.tokenizer, 'apply_chat_template'):
+                try:
+                    return self.tokenizer.apply_chat_template(
+                        messages, 
+                        tokenize=tokenize, 
+                        add_generation_prompt=add_generation_prompt
+                    )
+                except Exception as e:
+                    print(f"Tokenizer chat template failed: {e}")
+            
+            # Fallback to simple template
+            return self._simple_chat_template(messages, add_generation_prompt)
+            
+        except Exception as e:
+            print(f"Error in apply_chat_template: {e}")
+            # Ultimate fallback - just extract text
+            text_content = ""
+            for message in messages:
+                if isinstance(message, dict) and "content" in message:
+                    for content in message["content"]:
+                        if isinstance(content, dict) and content.get("type") == "text":
+                            text_content += content.get("text", "") + " "
+            return text_content.strip()
+    
+    def _simple_chat_template(self, messages, add_generation_prompt=True):
+        """Simple fallback chat template"""
+        formatted_text = ""
+        
+        for message in messages:
+            if isinstance(message, dict):
+                role = message.get("role", "user")
+                content = message.get("content", [])
+                
+                formatted_text += f"<|im_start|>{role}\n"
+                
+                # Process content
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            formatted_text += item.get("text", "") + "\n"
+                elif isinstance(content, str):
+                    formatted_text += content + "\n"
+                
+                formatted_text += "<|im_end|>\n"
+        
+        if add_generation_prompt:
+            formatted_text += "<|im_start|>assistant\n"
+        
+        return formatted_text
+    
+    def __call__(self, text=None, images=None, videos=None, padding=True, return_tensors="pt"):
+        """Process inputs with improved error handling"""
+        try:
+            # Remove unsupported parameters and use only supported ones
+            kwargs = {}
+            
+            if text is not None:
+                kwargs["text"] = text
+            if images is not None:
+                kwargs["images"] = images
+            # Skip videos parameter as it's not supported
+            if return_tensors:
+                kwargs["return_tensors"] = return_tensors
+                
+            # Try without padding first, then add if supported
+            try:
+                result = self.processor(**kwargs)
+            except TypeError as e:
+                if "padding" in str(e):
+                    # Remove padding and try again
+                    print("Note: Processor doesn't support padding parameter, proceeding without it")
+                    result = self.processor(**kwargs)
+                else:
+                    raise e
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error in processor call: {e}")
+            # Return a minimal structure
+            if text and isinstance(text, list):
+                text_str = text[0] if text else ""
+            else:
+                text_str = str(text) if text else ""
+                
+            encoded = self.tokenizer(text_str, return_tensors=return_tensors)
+            return encoded
+    
+    def batch_decode(self, sequences, **kwargs):
+        """Decode token sequences"""
+        return self.tokenizer.batch_decode(sequences, **kwargs)
 
 
 class DotsOCRProcessor:
     def __init__(self, model_path="./weights/DotsOCR"):
-        """
-        Initialize the DotsOCR processor.
-        
-        Args:
-            model_path (str): Path to the DotsOCR model weights
-        """
         self.model_path = model_path
         self.model = None
         self.processor = None
-        
-        # Check GPU memory and set device accordingly
-        if torch.cuda.is_available():
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-            print(f"Available GPU memory: {gpu_memory:.1f} GB")
-            if gpu_memory < 8:  # Less than 8GB, use CPU to avoid OOM
-                print("GPU memory insufficient for this large model, using CPU")
-                self.device = "cpu"
-            else:
-                self.device = "cuda"
-        else:
-            self.device = "cpu"
-        
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
+    
+    def load_model(self):
+        """Load DotsOCR model with comprehensive error handling"""
+        try:
+            print("Loading DotsOCR model...")
+            
+            # Determine the best dtype and device settings
+            if self.device == "cuda":
+                torch_dtype = torch.float16  # Use float16 for GPU
+                device_map = "auto"
+            else:
+                torch_dtype = torch.float32  # Use float32 for CPU
+                device_map = None
+            
+            # Try loading with different attention implementations
+            attention_configs = [
+                {"attn_implementation": "eager", "torch_dtype": torch_dtype},
+                {"torch_dtype": torch_dtype},  # No attention implementation specified
+                {"attn_implementation": "sdpa", "torch_dtype": torch_dtype},
+            ]
+            
+            model_loaded = False
+            
+            for i, config in enumerate(attention_configs):
+                try:
+                    print(f"Trying model loading configuration {i+1}/3...")
+                    
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        device_map=device_map,
+                        trust_remote_code=True,
+                        **config
+                    )
+                    
+                    # For CPU, ensure all parameters are float32
+                    if self.device == "cpu":
+                        print("Converting model to float32 for CPU compatibility...")
+                        self.model = self.model.float()
+                    
+                    model_loaded = True
+                    print(f"✓ Model loaded successfully with configuration {i+1}")
+                    break;
+                    
+                except Exception as e:
+                    print(f"Configuration {i+1} failed: {str(e)[:100]}...")
+                    if i == len(attention_configs) - 1:
+                        raise e
+            
+            if not model_loaded:
+                raise Exception("Failed to load model with any configuration")
+            
+            # Load processor with error handling
+            try:
+                print("Loading processor...")
+                processor = AutoProcessor.from_pretrained(
+                    self.model_path, 
+                    trust_remote_code=True
+                )
+                
+                # Try to load tokenizer separately
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_path, 
+                        trust_remote_code=True
+                    )
+                except:
+                    tokenizer = processor.tokenizer if hasattr(processor, 'tokenizer') else processor
+                
+                # Use improved wrapper
+                self.processor = ImprovedSimpleProcessor(processor, tokenizer)
+                print("✓ Processor loaded successfully")
+                
+            except Exception as e:
+                print(f"Error loading processor: {e}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
+    
+    def process_image(self, image_path):
+        """Process a single image with DotsOCR"""
+        if not self.model or not self.processor:
+            print("Model not loaded. Call load_model() first.")
+            return None
         
-        # Standard prompt for OCR processing
-        self.prompt = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
+        try:
+            print(f"Processing image: {image_path}")
+            
+            # Define the prompt
+            prompt = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
 
 1. Bbox format: [x1, y1, x2, y2]
 
@@ -91,369 +259,145 @@ class DotsOCRProcessor:
 
 5. Final Output: The entire output must be a single JSON object.
 """
-    
-    def load_model(self):
-        """Load the DotsOCR model and processor."""
-        try:
-            print(f"Loading model from: {self.model_path}")
-            
-            # Check if model path exists
-            if not os.path.exists(self.model_path):
-                print(f"Model path not found: {self.model_path}")
-                print("You need to download the DotsOCR model weights.")
-                print("Please visit: https://huggingface.co/rednote-hilab/dots.ocr")
-                return False
-            
-            # Load model with attention fallback
-            model_kwargs = {
-                "torch_dtype": torch.float32,  # Use float32 for CPU compatibility
-                "device_map": "cpu" if self.device == "cpu" else "auto",
-                "trust_remote_code": True
-            }
-            
-            # Try FlashAttention2 first, fallback to eager attention
-            if self.device == "cuda":
-                flash_attn_available = False
-                try:
-                    import flash_attn
-                    # Test if flash_attn actually works (not just importable)
-                    _ = flash_attn.__version__
-                    flash_attn_available = True
-                    print("FlashAttention2 detected and working")
-                except (ImportError, AttributeError, OSError, RuntimeError) as e:
-                    print(f"FlashAttention2 not available or broken: {type(e).__name__}")
-                    print("Using eager attention (this is fine)")
-                    flash_attn_available = False
-                
-                if flash_attn_available:
-                    model_kwargs["attn_implementation"] = "flash_attention_2"
-                    print("Using FlashAttention2 for faster inference")
-                else:
-                    model_kwargs["attn_implementation"] = "eager"
-            else:
-                model_kwargs["attn_implementation"] = "eager"
-            
-            # Try to load model with the chosen attention mechanism
-            try:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    **model_kwargs
-                )
-            except Exception as e:
-                error_msg = str(e).lower()
-                
-                # If FlashAttention2 fails during model loading, fallback to eager
-                if model_kwargs.get("attn_implementation") == "flash_attention_2":
-                    print(f"FlashAttention2 failed during model loading: {type(e).__name__}")
-                    print("Falling back to eager attention...")
-                    model_kwargs["attn_implementation"] = "eager"
-                    try:
-                        self.model = AutoModelForCausalLM.from_pretrained(
-                            self.model_path,
-                            **model_kwargs
-                        )
-                    except Exception as e2:
-                        # Handle video processor issues after attention fallback
-                        if ("video processor" in str(e2).lower() or 
-                            "nonetype for argument video_processor" in str(e2).lower()):
-                            print("Video processor config issue detected, using compatibility mode...")
-                            model_kwargs.update({
-                                "ignore_mismatched_sizes": True,
-                                "_from_auto": False
-                            })
-                            self.model = AutoModelForCausalLM.from_pretrained(
-                                self.model_path,
-                                **model_kwargs
-                            )
-                        else:
-                            raise e2
-                # Handle video processor configuration issues directly
-                elif ("video processor" in error_msg or 
-                      "nonetype for argument video_processor" in error_msg):
-                    print("Video processor config issue detected, using compatibility mode...")
-                    model_kwargs.update({
-                        "ignore_mismatched_sizes": True,
-                        "_from_auto": False
-                    })
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        **model_kwargs
-                    )
-                else:
-                    # Re-raise if it's not a known issue
-                    raise
-            
-            # Load processor with error handling
-            try:
-                self.processor = AutoProcessor.from_pretrained(
-                    self.model_path, 
-                    trust_remote_code=True
-                )
-            except Exception as e:
-                error_msg = str(e).lower()
-                if ("video processor" in error_msg or 
-                    "nonetype for argument video_processor" in error_msg):
-                    print("Video processor issue with AutoProcessor, trying alternative approach...")
-                    # Try loading processor components separately
-                    try:
-                        from transformers import AutoTokenizer, AutoImageProcessor
-                        # Load tokenizer and image processor separately using Auto classes
-                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-                        image_processor = AutoImageProcessor.from_pretrained(self.model_path, trust_remote_code=True)
-                        
-                        # Create a simple processor wrapper
-                        class SimpleProcessor:
-                            def __init__(self, tokenizer, image_processor):
-                                self.tokenizer = tokenizer
-                                self.image_processor = image_processor
-                            
-                            def __call__(self, text=None, images=None, **kwargs):
-                                if images is not None:
-                                    # Process images - remove padding argument for image processor
-                                    image_kwargs = {k: v for k, v in kwargs.items() if k != 'padding'}
-                                    processed_images = self.image_processor(images, **image_kwargs)
-                                    if text is not None:
-                                        # Process text - keep all kwargs for tokenizer
-                                        processed_text = self.tokenizer(text, **kwargs)
-                                        # Combine them
-                                        processed_text.update(processed_images)
-                                        return processed_text
-                                    return processed_images
-                                elif text is not None:
-                                    return self.tokenizer(text, **kwargs)
-                                else:
-                                    return {}
-                            
-                            def apply_chat_template(self, messages, **kwargs):
-                                """Apply chat template using the tokenizer."""
-                                if hasattr(self.tokenizer, 'apply_chat_template'):
-                                    try:
-                                        return self.tokenizer.apply_chat_template(messages, **kwargs)
-                                    except Exception as e:
-                                        print(f"Error in tokenizer apply_chat_template: {e}")
-                                        # Fall through to manual implementation
-                                
-                                # Fallback: create a simple text prompt from messages
-                                if isinstance(messages, list):
-                                    text_parts = []
-                                    for msg in messages:
-                                        if isinstance(msg, dict) and 'content' in msg:
-                                            content = msg['content']
-                                            if isinstance(content, list):
-                                                # Handle list of content items
-                                                for item in content:
-                                                    if isinstance(item, dict) and item.get('type') == 'text':
-                                                        text_parts.append(str(item.get('text', '')))
-                                            elif isinstance(content, str):
-                                                text_parts.append(content)
-                                            else:
-                                                text_parts.append(str(content))
-                                        else:
-                                            text_parts.append(str(msg))
-                                    return " ".join(text_parts)
-                                return str(messages)
-                            
-                            def batch_decode(self, sequences, **kwargs):
-                                """Decode sequences using the tokenizer."""
-                                if hasattr(self.tokenizer, 'batch_decode'):
-                                    return self.tokenizer.batch_decode(sequences, **kwargs)
-                                elif hasattr(self.tokenizer, 'decode'):
-                                    # Fallback to individual decode
-                                    return [self.tokenizer.decode(seq, **kwargs) for seq in sequences]
-                                else:
-                                    # Last resort: convert to strings
-                                    return [str(seq) for seq in sequences]
-                        
-                        self.processor = SimpleProcessor(tokenizer, image_processor)
-                        print("Loaded processor components separately (video processor bypassed)")
-                        
-                    except Exception as e2:
-                        print(f"Failed to load processor components: {e2}")
-                        # Try with simplified processor loading
-                        print("Attempting minimal processor setup...")
-                        try:
-                            self.processor = AutoProcessor.from_pretrained(
-                                self.model_path, 
-                                trust_remote_code=True,
-                                video_processor=None  # Explicitly set to None
-                            )
-                        except Exception as e3:
-                            print(f"All processor loading methods failed: {e3}")
-                            return False
-                else:
-                    print(f"Processor loading error: {e}")
-                    return False
-            
-            # Convert model to float32 if using CPU to avoid dtype mismatches
-            if self.device == "cpu":
-                print("Converting model to float32 for CPU compatibility...")
-                self.model = self.model.float()
-            
-            print("Model and processor loaded successfully!")
-            return True
-            
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            return False
-    
-    def process_image(self, image_path):
-        """
-        Process a single image with DotsOCR.
-        
-        Args:
-            image_path (str): Path to the image file
-            
-        Returns:
-            str: OCR result as text
-        """
-        try:
-            if not os.path.exists(image_path):
-                print(f"Image file not found: {image_path}")
-                return None
-            
-            print(f"Processing image: {image_path}")
-            
-            # Prepare messages for the model
+
+            # Prepare messages
             messages = [
                 {
-                    "role": "user",
+                    "role": "user", 
                     "content": [
-                        {
-                            "type": "image",
-                            "image": image_path
-                        },
-                        {"type": "text", "text": self.prompt}
+                        {"type": "image", "image": image_path},
+                        {"type": "text", "text": prompt}
                     ]
                 }
             ]
             
-            # Preparation for inference
+            # Apply chat template
             try:
                 text = self.processor.apply_chat_template(
                     messages, 
                     tokenize=False, 
                     add_generation_prompt=True
                 )
-                print(f"Chat template result: {text}")
+                print("✓ Chat template applied successfully")
             except Exception as e:
                 print(f"Error in apply_chat_template: {e}")
-                text = self.prompt  # Fallback to just the prompt
+                text = prompt  # Fallback to just the prompt
             
+            # Process vision info
             try:
                 image_inputs, video_inputs = process_vision_info(messages)
-                print(f"Vision info: images={len(image_inputs)}, videos={len(video_inputs) if video_inputs else 0}")
+                print("✓ Vision info processed successfully")
             except Exception as e:
                 print(f"Error in process_vision_info: {e}")
-                image_inputs, video_inputs = [image_path], []
+                # Fallback: load image directly
+                try:
+                    image_inputs = [Image.open(image_path)]
+                    video_inputs = []
+                except Exception as e2:
+                    print(f"Error loading image directly: {e2}")
+                    return None
             
-            # Load the actual image data
-            try:
-                from PIL import Image
-                if isinstance(image_inputs[0], str):
-                    # Convert file path to loaded image
-                    loaded_images = [Image.open(img_path) for img_path in image_inputs]
-                    image_inputs = loaded_images
-            except Exception as e:
-                print(f"Error loading images: {e}")
-                # Keep as paths and let processor handle it
-            
+            # Prepare inputs for the model
             try:
                 inputs = self.processor(
                     text=[text],
                     images=image_inputs,
-                    videos=video_inputs,
                     return_tensors="pt",
                 )
+                print("✓ Inputs prepared successfully")
             except Exception as e:
                 print(f"Error in processor call: {e}")
-                # Try simpler approach without videos and padding
+                # Try simplified approach
                 try:
                     inputs = self.processor(
-                        text=[text],
+                        text=[text] if isinstance(text, str) else text,
                         images=image_inputs,
-                        return_tensors="pt",
+                        return_tensors="pt"
                     )
+                    print("✓ Simplified processor call succeeded")
                 except Exception as e2:
                     print(f"Error in simplified processor call: {e2}")
-                    # Try with just text processing
-                    inputs = self.processor(
-                        text=[text],
-                        return_tensors="pt",
-                    )
+                    return None
             
-            # Move inputs to device
-            inputs = inputs.to(self.device)
+            # Move to device
+            try:
+                inputs = inputs.to(self.device)
+                print(f"✓ Inputs moved to {self.device}")
+            except Exception as e:
+                print(f"Warning: Could not move inputs to {self.device}: {e}")
             
-            # Inference: Generation of the output
+            # Generate
             print("Generating OCR output...")
-            with torch.no_grad():
-                generated_ids = self.model.generate(**inputs, max_new_tokens=24000)
+            try:
+                with torch.no_grad():  # Save memory
+                    generated_ids = self.model.generate(
+                        **inputs, 
+                        max_new_tokens=24000,
+                        do_sample=False,  # Use greedy decoding for consistency
+                        pad_token_id=self.processor.tokenizer.eos_token_id
+                    )
+                
+                print("✓ Generation completed successfully")
+            except Exception as e:
+                print(f"Error during generation: {e}")
+                return None
             
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            
-            output_text = self.processor.batch_decode(
-                generated_ids_trimmed, 
-                skip_special_tokens=True, 
-                clean_up_tokenization_spaces=False
-            )
-            
-            return output_text[0] if output_text else None
-            
+            # Decode output
+            try:
+                generated_ids_trimmed = [
+                    out_ids[len(in_ids):] 
+                    for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                ]
+                
+                output_text = self.processor.batch_decode(
+                    generated_ids_trimmed, 
+                    skip_special_tokens=True, 
+                    clean_up_tokenization_spaces=False
+                )
+                
+                print("✓ Output decoded successfully")
+                return output_text[0] if output_text else None
+                
+            except Exception as e:
+                print(f"Error decoding output: {e}")
+                return None
+        
         except Exception as e:
-            print(f"Error processing image {image_path}: {str(e)}")
+            print(f"Error processing image {image_path}: {e}")
             return None
     
     def process_images_batch(self, image_paths, output_dir):
-        """
-        Process multiple images and save results.
-        
-        Args:
-            image_paths (list): List of image file paths
-            output_dir (str): Directory to save results
-            
-        Returns:
-            dict: Dictionary mapping image names to their results
-        """
+        """Process multiple images and save results"""
         os.makedirs(output_dir, exist_ok=True)
-        results = {}
+        results = []
         
         for i, image_path in enumerate(image_paths, 1):
-            print(f"\nProcessing image {i}/{len(image_paths)}")
+            print(f"\n--- Processing image {i}/{len(image_paths)} ---")
             
-            # Get image name for output file
-            image_name = Path(image_path).stem
+            result = self.process_image(image_path)
             
-            # Process the image
-            ocr_result = self.process_image(image_path)
-            
-            if ocr_result:
-                # Save result as JSON file
-                result_filename = f"{image_name}_ocr_result.json"
-                result_path = os.path.join(output_dir, result_filename)
+            if result:
+                # Save result
+                image_name = Path(image_path).stem
+                output_file = os.path.join(output_dir, f"{image_name}_ocr.json")
                 
                 try:
-                    # Try to parse as JSON to validate
-                    parsed_result = json.loads(ocr_result)
+                    # Try to parse as JSON first
+                    try:
+                        json_result = json.loads(result)
+                        with open(output_file, 'w', encoding='utf-8') as f:
+                            json.dump(json_result, f, indent=2, ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        # Save as text if not valid JSON
+                        output_file = output_file.replace('.json', '.txt')
+                        with open(output_file, 'w', encoding='utf-8') as f:
+                            f.write(result)
                     
-                    # Save formatted JSON
-                    with open(result_path, 'w', encoding='utf-8') as f:
-                        json.dump(parsed_result, f, indent=2, ensure_ascii=False)
+                    print(f"✓ Result saved: {output_file}")
+                    results.append(output_file)
                     
-                    print(f"Saved result to: {result_path}")
-                    results[image_name] = parsed_result
-                    
-                except json.JSONDecodeError:
-                    # If not valid JSON, save as text
-                    text_filename = f"{image_name}_ocr_result.txt"
-                    text_path = os.path.join(output_dir, text_filename)
-                    
-                    with open(text_path, 'w', encoding='utf-8') as f:
-                        f.write(ocr_result)
-                    
-                    print(f"Saved text result to: {text_path}")
-                    results[image_name] = ocr_result
+                except Exception as e:
+                    print(f"Error saving result: {e}")
             else:
                 print(f"Failed to process image: {image_path}")
         
@@ -463,18 +407,13 @@ class DotsOCRProcessor:
 def process_page_images(pages_dir, results_dir, model_path="./weights/DotsOCR"):
     """
     Process all page images in the pages directory.
-    
-    Args:
-        pages_dir (str): Directory containing page images
-        results_dir (str): Directory to save OCR results
-        model_path (str): Path to DotsOCR model
     """
     processor = DotsOCRProcessor(model_path)
     
     # Load the model
     if not processor.load_model():
         print("Failed to load model. Exiting.")
-        return
+        return []
     
     # Find all image files
     image_extensions = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
@@ -488,7 +427,7 @@ def process_page_images(pages_dir, results_dir, model_path="./weights/DotsOCR"):
     
     if not image_files:
         print(f"No image files found in {pages_dir}")
-        return
+        return []
     
     print(f"Found {len(image_files)} image files to process")
     
@@ -498,6 +437,8 @@ def process_page_images(pages_dir, results_dir, model_path="./weights/DotsOCR"):
     print(f"\nProcessing completed!")
     print(f"Successfully processed: {len(results)} images")
     print(f"Results saved in: {results_dir}")
+    
+    return results
 
 
 def main():
@@ -517,8 +458,10 @@ def main():
             if result:
                 print("OCR Result:")
                 print(result)
+            else:
+                print("Failed to process image")
     else:
-        # Process all images in pages directory
+        # Process all images in directory
         process_page_images(args.pages_dir, args.results_dir, args.model_path)
 
 
