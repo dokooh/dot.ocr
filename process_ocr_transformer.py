@@ -200,7 +200,7 @@ class DotsOCRProcessor:
                 print(f"Error loading processor: {e}")
                 
                 # Try alternative processor loading approaches
-                if "video processor" in str(e).lower() or "video_processor" in str(e).lower() or "BaseVideoProcessor" in str(e):
+                if "video processor" in str(e).lower():
                     print("Video processor issue detected, trying alternative approach...")
                     try:
                         # Try loading components separately
@@ -233,11 +233,7 @@ class DotsOCRProcessor:
                                 # Simple tokenization
                                 if isinstance(text, list):
                                     text = text[0] if text else ""
-                                
-                                # Extract return_tensors to avoid duplicate argument
-                                return_tensors = kwargs.pop('return_tensors', 'pt')
-                                
-                                return self.tokenizer(text, return_tensors=return_tensors, **kwargs)
+                                return self.tokenizer(text, return_tensors="pt", **kwargs)
                             
                             def batch_decode(self, sequences, **kwargs):
                                 return self.tokenizer.batch_decode(sequences, **kwargs)
@@ -247,10 +243,8 @@ class DotsOCRProcessor:
                         
                     except Exception as e2:
                         print(f"Failed to create minimal processor: {e2}")
-                        print("❌ Failed to load any processor")
                         return False
                 else:
-                    print("❌ Failed to load any processor")
                     return False
             
             print("Model and processor loaded successfully!")
