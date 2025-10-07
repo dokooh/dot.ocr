@@ -23,31 +23,57 @@ except ImportError:
         image_inputs = []
         video_inputs = []
         
+        # Handle None or empty messages
         if messages is None:
             return image_inputs, video_inputs
+        
+        # Ensure messages is iterable
+        if not isinstance(messages, (list, tuple)):
+            return image_inputs, video_inputs
             
-        for message in messages:
-            if isinstance(message, dict) and "content" in message:
+        try:
+            for message in messages:
+                if not isinstance(message, dict) or "content" not in message:
+                    continue
+                    
                 content_list = message["content"]
+                
+                # Handle None or non-iterable content
                 if content_list is None:
                     continue
+                if not isinstance(content_list, (list, tuple)):
+                    continue
+                    
                 for content in content_list:
-                    if isinstance(content, dict):
-                        if content.get("type") == "image" and "image" in content:
-                            # Load image as PIL Image for processing
-                            image_path = content["image"]
-                            try:
-                                if isinstance(image_path, str):
-                                    image = Image.open(image_path).convert('RGB')
-                                    image_inputs.append(image)
-                                else:
-                                    image_inputs.append(image_path)
-                            except Exception as e:
-                                print(f"Error loading image {image_path}: {e}")
-                        elif content.get("type") == "video" and "video" in content:
-                            video_inputs.append(content["video"])
+                    if not isinstance(content, dict):
+                        continue
+                        
+                    # Process image content
+                    if content.get("type") == "image" and "image" in content:
+                        image_path = content["image"]
+                        if image_path is None:
+                            continue
+                            
+                        try:
+                            if isinstance(image_path, str) and os.path.exists(image_path):
+                                image = Image.open(image_path).convert('RGB')
+                                image_inputs.append(image)
+                            elif hasattr(image_path, 'convert'):  # Already a PIL Image
+                                image_inputs.append(image_path)
+                        except Exception as e:
+                            print(f"Warning: Could not load image {image_path}: {e}")
+                            
+                    # Process video content
+                    elif content.get("type") == "video" and "video" in content:
+                        video_path = content["video"]
+                        if video_path is not None:
+                            video_inputs.append(video_path)
+                            
+        except Exception as e:
+            print(f"Warning: Error processing vision info: {e}")
         
-        return image_inputs, video_inputs
+        # Ensure we always return lists, never None
+        return image_inputs or [], video_inputs or []
 
 try:
     from dots_ocr.utils import dict_promptmode_to_prompt
