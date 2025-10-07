@@ -198,10 +198,18 @@ class DotsOCRProcessor:
                 
             except Exception as e:
                 print(f"Error loading processor: {e}")
+                print(f"Error type: {type(e).__name__}")
                 
                 # Try alternative processor loading approaches
-                if "video processor" in str(e).lower() or "video_processor" in str(e).lower() or "BaseVideoProcessor" in str(e):
+                error_patterns = [
+                    "video processor", "video_processor", "basevideoprocessor",
+                    "unrecognized video processor", "video_processor_type",
+                    "video_preprocessor_config.json", "model_type"
+                ]
+                
+                if any(pattern in str(e).lower() for pattern in error_patterns):
                     print("Video processor issue detected, trying alternative approach...")
+                    print(f"Matched error pattern in: {str(e)[:200]}...")
                     try:
                         # Try loading components separately
                         tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
@@ -227,6 +235,10 @@ class DotsOCRProcessor:
                                         for content in message["content"]:
                                             if isinstance(content, dict) and content.get("type") == "text":
                                                 text += content.get("text", "") + " "
+                                
+                                if add_generation_prompt:
+                                    text += "<|im_start|>assistant\n"
+                                
                                 return text.strip()
                             
                             def __call__(self, text=None, images=None, videos=None, **kwargs):
